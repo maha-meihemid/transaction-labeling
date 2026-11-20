@@ -33,6 +33,15 @@ class TransactionSchemaTests(unittest.TestCase):
             with self.subTest(payload=payload), self.assertRaises(ValidationError):
                 Transaction.model_validate(payload)
 
+    def test_rejects_fields_outside_the_documented_api_contract(self):
+        with self.assertRaises(ValidationError):
+            Transaction.model_validate({
+                "title": "CARREFOUR",
+                "amount_value": -12.5,
+                "created_at": "2026-06-11T12:30:00Z",
+                "transaction_id": "tx-123",
+            })
+
 
 if __name__ == "__main__":
     unittest.main()

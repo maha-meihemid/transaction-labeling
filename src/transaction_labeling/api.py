@@ -9,7 +9,6 @@ from fastapi import FastAPI, HTTPException
 
 from src.transaction_labeling.models import predict_minor
 from src.transaction_labeling.schemas import Transaction
-from src.transaction_labeling.targets import map_minor_to_major
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,9 +39,10 @@ def predict(transaction: Transaction):
     row = pd.DataFrame([transaction.model_dump()])
     try:
         minor_category = predict_minor(bundle, row).iloc[0]
-        major_category = map_minor_to_major(
-            pd.Series([minor_category]), bundle["major_category_mapping"]
-        ).iloc[0]
+        major_mapping = bundle["major_category_mapping"]
+        if minor_category not in major_mapping:
+            raise ValueError(f"Catégorie fine sans correspondance : {minor_category}.")
+        major_category = major_mapping[minor_category]
     except Exception as error:
         LOGGER.exception("Échec de prédiction pour le modèle %s", manifest["model_type"])
         raise HTTPException(

@@ -7,10 +7,12 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
 from sklearn.metrics import precision_recall_fscore_support
 
+from src.transaction_labeling.baselines import fit_title_history_rule, predict_title_history_rule
 from src.transaction_labeling.features import build_preprocessor
 from src.transaction_labeling.models import (
-    build_logistic_classifier,
-    build_xgboost_classifier,
+    MODEL_CANDIDATES,
+    MODEL_CANDIDATES_BY_NAME,
+    build_candidate_classifier,
 )
 from src.transaction_labeling.targets import MINOR_TARGET
 
@@ -28,6 +30,8 @@ REPORT_PATH = ROOT / "reports" / "model_comparison_report.md"
 RANDOM_STATE = 42
 INITIAL_TRAIN_DAYS = 28
 VALIDATION_WINDOW_DAYS = 7
+BASELINE_NAME = "title_history_rule"
+REFERENCE_MODEL = "logistic_word_unweighted_c1"
 
 
 def file_sha256(path):
@@ -51,23 +55,6 @@ def make_folds(data):
     if len(folds) < 2:
         raise ValueError("Pas assez de données pour créer au moins deux fenêtres temporelles.")
     return folds
-
-
-def build_candidates():
-    return [
-        (
-            "logistic_unweighted",
-            build_logistic_classifier(),
-            False,
-        ),
-        (
-            "logistic_balanced",
-            build_logistic_classifier(class_weight="balanced"),
-            False,
-        ),
-        ("xgboost_unweighted", build_xgboost_classifier(), False),
-        ("xgboost_balanced", build_xgboost_classifier(), True),
-    ]
 
 
 def main():
@@ -106,14 +93,26 @@ def main():
                 f"validation={sorted(missing_validation)}."
             )
 
-        preprocessor = build_preprocessor()
-        x_train = preprocessor.fit_transform(fold_train, y_train)
-        x_validation = preprocessor.transform(fold_validation)
         class_counts = np.bincount(y_train, minlength=len(labels))
         sample_weights = len(y_train) / (len(labels) * class_counts[y_train])
 
-        for model_name, model, use_class_weights in build_candidates():
-            fit_parameters = {"sample_weight": sample_weights} if use_class_weights else {}
+        transformed_by_variant = {}
+        for text_variant in {candidate["text_variant"] for candidate in MODEL_CANDIDATES}:
+            preprocessor = build_preprocessor(text_variant)
+            transformed_by_variant[text_variant] = (
+                preprocessor.fit_transform(fold_train, y_train),
+                preprocessor.transform(fold_validation),
+            )
+
+        for candidate in MODEL_CANDIDATES:
+            model_name = candidate["name"]
+            x_train, x_validation = transformed_by_variant[candidate["text_variant"]]
+            model = build_candidate_classifier(candidate)
+            use_sample_weights = (
+                candidate["family"] == "xgboost"
+                and candidate["weighting"] == "balanced"
+            )
+            fit_parameters = {"sample_weight": sample_weights} if use_sample_weights else {}
             model.fit(x_train, y_train, **fit_parameters)
             predictions = model.predict(x_validation)
             precision, recall, class_f1, support = precision_recall_fscore_support(
@@ -149,6 +148,43 @@ def main():
                 "support": int(support[index]),
             } for index in range(len(labels)))
 
+        title_rule = fit_title_history_rule(fold_train)
+        baseline_predictions = predict_title_history_rule(
+            title_rule, fold_validation
+        ).map(label_to_id).to_numpy()
+        precision, recall, class_f1, support = precision_recall_fscore_support(
+            y_validation,
+            baseline_predictions,
+            labels=np.arange(len(labels)),
+            zero_division=0,
+        )
+        fold_rows.append({
+            "model": BASELINE_NAME,
+            "fold": fold_number,
+            "train_rows": len(fold_train),
+            "validation_rows": len(fold_validation),
+            "validation_start_utc": start_day.date().isoformat(),
+            "validation_end_utc": end_day.date().isoformat(),
+            "macro_f1": f1_score(
+                y_validation, baseline_predictions, labels=np.arange(len(labels)),
+                average="macro", zero_division=0,
+            ),
+            "balanced_accuracy": balanced_accuracy_score(y_validation, baseline_predictions),
+            "weighted_f1": f1_score(
+                y_validation, baseline_predictions, average="weighted", zero_division=0,
+            ),
+            "accuracy": accuracy_score(y_validation, baseline_predictions),
+        })
+        class_rows.extend({
+            "model": BASELINE_NAME,
+            "fold": fold_number,
+            "class": labels[index],
+            "precision": precision[index],
+            "recall": recall[index],
+            "f1": class_f1[index],
+            "support": int(support[index]),
+        } for index in range(len(labels)))
+
         print(
             f"Fold {fold_number}/{len(fold_windows)} terminé "
             f"({len(fold_train)} train, {len(fold_validation)} validation).",
@@ -158,7 +194,7 @@ def main():
     fold_results = pd.DataFrame(fold_rows)
     class_results = pd.DataFrame(class_rows)
     reference_scores = (
-        fold_results.loc[fold_results["model"].eq("logistic_unweighted"), ["fold", "macro_f1"]]
+        fold_results.loc[fold_results["model"].eq(REFERENCE_MODEL), ["fold", "macro_f1"]]
         .rename(columns={"macro_f1": "reference_macro_f1"})
     )
     paired_results = fold_results.merge(reference_scores, on="fold", validate="many_to_one")
@@ -166,15 +202,16 @@ def main():
     paired_summary = paired_results.groupby("model").agg(
         macro_f1_delta_mean=("macro_f1_delta", "mean"),
         macro_f1_delta_std=("macro_f1_delta", "std"),
-        folds_better_than_logistic_unweighted=("macro_f1_delta", lambda values: int(values.gt(0).sum())),
+        folds_better_than_reference=("macro_f1_delta", lambda values: int(values.gt(0).sum())),
     ).reset_index()
 
     metric_columns = ["macro_f1", "balanced_accuracy", "weighted_f1", "accuracy"]
     summary = fold_results.groupby("model")[metric_columns].agg(["mean", "std"])
     summary.columns = [f"{metric}_{stat}" for metric, stat in summary.columns]
     selection_order = {
-        name: index for index, (name, _, _) in enumerate(build_candidates())
+        candidate["name"]: index for index, candidate in enumerate(MODEL_CANDIDATES)
     }
+    selection_order[BASELINE_NAME] = len(MODEL_CANDIDATES)
     summary = summary.reset_index()
     summary["selection_order"] = summary["model"].map(selection_order)
     summary = summary.sort_values(
@@ -196,7 +233,8 @@ def main():
         "initial_train_days": INITIAL_TRAIN_DAYS,
         "validation_window_days": VALIDATION_WINDOW_DAYS,
         "fold_count": len(fold_windows),
-        "models": [name for name, _, _ in build_candidates()],
+        "models": [candidate["name"] for candidate in MODEL_CANDIDATES],
+        "baseline": BASELINE_NAME,
         "selection_target": MINOR_TARGET,
         "selection_metric": "macro_f1_mean",
     }
@@ -214,17 +252,20 @@ def main():
         "",
         "## Protocole",
         "",
-        f"Les quatre configurations sont évaluées sur les mêmes {len(fold_windows)} fenêtres temporelles, "
+        f"Les {len(MODEL_CANDIDATES)} configurations modèle et la baseline sont évaluées sur les mêmes "
+        f"{len(fold_windows)} fenêtres temporelles, "
         f"créées uniquement dans `train`. Chaque fenêtre valide sur au plus {VALIDATION_WINDOW_DAYS} jours "
         f"après un historique initial de {INITIAL_TRAIN_DAYS} jours. À chaque fold, le prétraitement est "
-        "ajusté uniquement sur les dates d’entraînement. Le test final n’intervient ni dans la comparaison "
-        "ni dans le choix du modèle.",
+        "ajusté uniquement sur les dates d’entraînement. Le choix du modèle repose sur ces folds. Le test "
+        "a déjà été consulté dans un cycle exploratoire antérieur et ne constitue plus une estimation indépendante.",
         "",
         f"La cible de sélection est `{MINOR_TARGET}` et le critère principal est le macro-F1 moyen. "
-        "Les deux pondérations sont testées pour la régression logistique et XGBoost. XGBoost utilise "
-        "des paramètres fixes (80 arbres, profondeur 4, taux d’apprentissage 0,05) ; aucune recherche "
-        "d’hyperparamètres n’est effectuée. En cas d’égalité exacte, la variante sans pondération est "
-        "préférée, puis la régression logistique à XGBoost.",
+        "La baseline `title_history_rule` utilise uniquement l’historique antérieur à chaque fenêtre : "
+        "catégorie non-refund la plus fréquente par titre, avec repli sur la classe globale majoritaire. "
+        "Le signal montant positif → refund est activé seulement si cette relation est parfaite dans le train du fold. "
+        "Les modèles comparent les deux pondérations ; la logistique est évaluée en TF-IDF mots et mots+caractères "
+        "avec C = 1, 4 ou 10. XGBoost garde des paramètres fixes (80 arbres, profondeur 4, taux d’apprentissage 0,05). "
+        "La baseline ne participe pas à la sélection du pipeline de modèle.",
         "",
         f"Empreinte SHA-256 de `train.csv` : `{train_hash}`.",
         "",
@@ -243,7 +284,7 @@ def main():
 
     lines.extend([
         "",
-        "Les écarts ci-dessous sont calculés fenêtre par fenêtre par rapport à `logistic_unweighted`. "
+        f"Les écarts ci-dessous sont calculés fenêtre par fenêtre par rapport à `{REFERENCE_MODEL}`. "
         "Les folds sont temporels et leurs historiques d’entraînement se recouvrent ; ces écarts-types "
         "décrivent la variabilité observée et ne sont pas des intervalles de confiance.",
         "",
@@ -254,16 +295,16 @@ def main():
         lines.append(
             f"| `{row.model}` | {row.macro_f1_delta_mean:+.3f} | "
             f"{row.macro_f1_delta_std:.3f} | "
-            f"{row.folds_better_than_logistic_unweighted}/{len(fold_windows)} |"
+            f"{row.folds_better_than_reference}/{len(fold_windows)} |"
         )
 
-    selected = summary.iloc[0]
+    selected = summary.loc[summary["model"].isin(MODEL_CANDIDATES_BY_NAME)].iloc[0]
     lines.extend([
         "",
-        f"La configuration au meilleur macro-F1 moyen est `{selected['model']}` "
+        f"La configuration modèle au meilleur macro-F1 moyen est `{selected['model']}` "
         f"({selected['macro_f1_mean']:.3f} ± {selected['macro_f1_std']:.3f}). "
-        "Cette comparaison sert à sélectionner le modèle ; l’évaluation finale reste celle du test temporel, "
-        "exécutée séparément après l’entraînement.",
+        "Cette comparaison sélectionne la configuration selon la validation temporelle. Le score test est "
+        "rétrospectif, car le jeu a déjà été exploré.",
         "",
         "## Résultats moyens par catégorie",
         "",

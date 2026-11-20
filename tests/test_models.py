@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from src.transaction_labeling.models import predict_minor
+from src.transaction_labeling.models import build_model, predict_minor
 
 
 class FixedModel:
@@ -24,6 +24,14 @@ class PredictionDecodingTests(unittest.TestCase):
 
         self.assertEqual(predictions.tolist(), ["refund", "atm"])
         self.assertEqual(predictions.index.tolist(), [5, 9])
+
+    def test_character_candidate_uses_character_tfidf_and_selected_c(self):
+        model = build_model("logistic_word_char_unweighted_c4")
+        feature_pipeline = model.named_steps["features"]
+        classifier = model.named_steps["classifier"]
+
+        self.assertIn("title_char", [name for name, _, _ in feature_pipeline.transformers])
+        self.assertEqual(classifier.C, 4.0)
 
 
 if __name__ == "__main__":

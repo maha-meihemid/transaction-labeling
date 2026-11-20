@@ -10,6 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from src.transaction_labeling.baselines import normalize_title
 from src.transaction_labeling.data import remove_exact_ref_duplicates
 
 
@@ -56,6 +57,39 @@ def build_minor_major_audit(df):
     return audit
 
 
+def build_title_label_consistency(df, minimum_title_rows=5):
+    labeled = df.loc[
+        df[TARGET].notna() & df[TARGET].ne("refund"), ["title", TARGET]
+    ].copy()
+    labeled["normalized_title"] = labeled["title"].map(normalize_title)
+    counts = pd.crosstab(labeled["normalized_title"], labeled[TARGET])
+    total_rows = counts.sum(axis=1)
+    dominant_count = counts.max(axis=1)
+    consistency = pd.DataFrame({
+        "transactions": total_rows,
+        "dominant_category": counts.idxmax(axis=1),
+        "discordant_rows": total_rows - dominant_count,
+        "dominant_class_share": dominant_count.div(total_rows),
+    })
+    consistency = consistency.loc[consistency["transactions"].ge(minimum_title_rows)]
+    consistency.index.name = "normalized_title"
+    consistency = consistency.sort_values(
+        ["dominant_class_share", "transactions"], ascending=[True, False]
+    )
+    summary = pd.DataFrame([{
+        "minimum_title_rows": minimum_title_rows,
+        "eligible_titles": len(consistency),
+        "eligible_transactions": int(consistency["transactions"].sum()),
+        "discordant_rows": int(consistency["discordant_rows"].sum()),
+        "discordant_row_share": float(
+            consistency["discordant_rows"].sum() / consistency["transactions"].sum()
+        ),
+        "minimum_title_purity": float(consistency["dominant_class_share"].min()),
+        "title_at_minimum_purity": consistency.index[0],
+    }])
+    return consistency, summary
+
+
 def main():
     FIGURES_PATH.mkdir(parents=True, exist_ok=True)
     TABLES_PATH.mkdir(parents=True, exist_ok=True)
@@ -100,6 +134,14 @@ def main():
     save_table(major_minor, "major_minor_crosswalk.csv")
     mapping_audit = build_minor_major_audit(df)
     save_table(mapping_audit, "minor_major_mapping_audit.csv")
+
+    title_consistency, title_consistency_summary = build_title_label_consistency(df)
+    title_consistency.to_csv(
+        TABLES_PATH / "title_label_consistency.csv", index=True, encoding="utf-8-sig"
+    )
+    title_consistency_summary.to_csv(
+        TABLES_PATH / "title_label_consistency_summary.csv", index=False, encoding="utf-8-sig"
+    )
 
     quality = pd.Series({
         "raw_rows_before_deduplication": len(raw_df),
@@ -255,11 +297,11 @@ def main():
     print(crosswalk.to_string())
     print("\nCorrespondance catégorie fine -> principale :")
     print(mapping_audit.to_string())
+    print("\nCohérence des catégories par titre (hors refunds, titres vus au moins 5 fois) :")
+    print(title_consistency_summary.to_string(index=False))
     print("\nMultiplicité des entités :")
     print(pd.DataFrame(entity_rows).to_string(index=False))
 
 
 if __name__ == "__main__":
     main()
-
-\n

@@ -234,5 +234,5 @@ reports/figures/*
 !reports/figures/05_amount_by_category.png
 !reports/figures/06_transactions_over_time.png
 !reports/figures/08_status_target_relationship.png
-!reports/figures/logistic_unweighted_minor_category_confusion_matrix.png
+!reports/figures/logistic_word_char_unweighted_c4_minor_category_confusion_matrix.png
 docs/

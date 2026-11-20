@@ -6,6 +6,7 @@ import joblib
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix
 
+from src.transaction_labeling.baselines import fit_title_history_rule, normalize_title
 from src.transaction_labeling.targets import MINOR_TARGET, map_minor_to_major
 from src.transaction_labeling.models import predict_minor
 
@@ -79,7 +80,20 @@ def main():
         "predicted_minor_category",
     ]
     errors = test.loc[test["is_error"], error_columns].copy()
+    title_modes = fit_title_history_rule(train)["title_modes"]
+    errors["train_title_mode"] = errors["title"].map(normalize_title).map(title_modes)
+    errors["error_context"] = "label_matches_train_title_mode"
+    errors.loc[errors["train_title_mode"].isna(), "error_context"] = "no_nonrefund_title_history"
+    errors.loc[
+        errors["train_title_mode"].notna()
+        & errors[MINOR_TARGET].ne(errors["train_title_mode"]),
+        "error_context",
+    ] = "label_differs_from_train_title_mode"
     errors.to_csv(ERRORS_PATH, index=False, encoding="utf-8-sig")
+    error_context = (
+        errors["error_context"].value_counts().rename_axis("error_context")
+        .rename("transactions").reset_index()
+    )
     extreme_errors = errors.loc[errors["amount_value"].abs().gt(1_000)].sort_values(
         "amount_value", key=lambda values: values.abs(), ascending=False
     )
@@ -87,15 +101,32 @@ def main():
     lines = [
         "# Analyse des erreurs sur le test final",
         "",
-        "Cette analyse décrit les prédictions du modèle déjà évalué. Elle n’a pas servi à modifier les variables, le modèle ou ses paramètres.",
+        "Cette analyse compare les prédictions aux annotations du CSV. Elle ne permet pas d’établir que ces annotations sont la vérité métier.",
         "",
-        f"Le modèle se trompe sur {len(errors)} transactions sur {len(test)} ({len(errors) / len(test):.1%}). La cible analysée est `{MINOR_TARGET}` ; `major_category` est dérivée de la catégorie fine.",
+        f"Le modèle diffère des annotations sur {len(errors)} transactions sur {len(test)} ({len(errors) / len(test):.1%}). La cible analysée est `{MINOR_TARGET}` ; `major_category` est dérivée de la catégorie fine.",
+        "",
+        "## Contexte des divergences selon l’historique du titre",
+        "",
+        "Le mode historique est calculé dans `train` en excluant `refund`. Ces groupes décrivent des désaccords avec l’historique ; ils ne prouvent pas un bruit d’annotation ni une erreur métier.",
+        "",
+        "| Situation | Transactions |",
+        "|---|---:|",
+    ]
+    context_labels = {
+        "no_nonrefund_title_history": "Aucun historique non-refund pour ce titre",
+        "label_differs_from_train_title_mode": "Annotation différente du mode historique du titre",
+        "label_matches_train_title_mode": "Annotation conforme au mode historique du titre",
+    }
+    for row in error_context.itertuples(index=False):
+        lines.append(f"| {context_labels[row.error_context]} | {row.transactions} |")
+
+    lines.extend([
         "",
         "## Catégories avec le plus d’erreurs",
         "",
         "| Catégorie réelle | Transactions test | Erreurs | Rappel | F1 |",
         "|---|---:|---:|---:|---:|",
-    ]
+    ])
     worst_classes = class_metrics.sort_values(["recall", "support"], ascending=[True, False]).head(5)
     for row in worst_classes.itertuples(index=False):
         lines.append(f"| `{row.category}` | {row.support} | {row.errors} | {row.recall:.3f} | {row._3:.3f} |")
@@ -125,7 +156,7 @@ def main():
         "",
         "## Lecture",
         "",
-        "Les principales confusions sont à examiner comme des erreurs du modèle sur les annotations disponibles, pas automatiquement comme des erreurs d’annotation. Un même intitulé peut être ambigu selon le contexte, et les exemples ci-dessus ne suffisent pas à établir la cause. Les catégories peu représentées dans le test ont des estimations de rappel plus incertaines. Les erreurs avec des montants extrêmes méritent une vérification des données ; cette analyse ne permet pas de conclure s’il s’agit d’anomalies métier ou d’erreurs de génération.",
+        "Les principales confusions sont des écarts par rapport aux annotations disponibles. Un même intitulé peut être ambigu selon le contexte, et les exemples ci-dessus ne suffisent pas à établir la cause. Les catégories peu représentées dans le test ont des estimations de rappel plus incertaines. Les erreurs avec des montants extrêmes méritent une vérification des données ; cette analyse ne permet pas de conclure s’il s’agit d’anomalies métier ou d’erreurs de génération.",
         "",
         "Les remboursements sont correctement classés en `minor_category` dans ce test, mais le signe du montant les distingue parfaitement dans ce CSV synthétique ; ce résultat ne démontre donc pas une capacité robuste à reconnaître les remboursements en production.",
         "",

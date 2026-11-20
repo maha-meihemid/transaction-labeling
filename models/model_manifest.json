@@ -1,23 +1,43 @@
 {
-  "model_type": "logistic_unweighted_with_derived_major_category",
-  "selected_variant": "logistic_unweighted",
+  "model_type": "logistic_word_char_unweighted_c4_with_derived_major_category",
+  "selected_variant": "logistic_word_char_unweighted_c4",
+  "selected_candidate": {
+    "name": "logistic_word_char_unweighted_c4",
+    "family": "logistic",
+    "text_variant": "word_char",
+    "weighting": "unweighted",
+    "c": 4.0
+  },
   "selection_metric": "minor_category_macro_f1_mean",
   "selection_source": "temporal_cross_validation_on_train_only",
   "classifier_parameters": {
     "solver": "lbfgs",
-    "C": 1.0,
+    "C": 4.0,
     "max_iter": 2000,
     "random_state": 42,
     "class_weight": null
   },
   "text_parameters": {
-    "ngram_range": [
-      1,
-      2
-    ],
-    "min_df": 2,
-    "max_features": 20000,
-    "sublinear_tf": true
+    "variant": "word_char",
+    "word": {
+      "ngram_range": [
+        1,
+        2
+      ],
+      "min_df": 2,
+      "max_features": 20000,
+      "sublinear_tf": true
+    },
+    "character": {
+      "analyzer": "char_wb",
+      "ngram_range": [
+        2,
+        5
+      ],
+      "min_df": 2,
+      "max_features": 50000,
+      "sublinear_tf": true
+    }
   },
   "categorical_parameters": {
     "min_frequency": 10,
@@ -27,10 +47,10 @@
   "pandas_version": "2.3.3",
   "xgboost_version": "3.4.1",
   "training_data_sha256": "a49c54f29c6d8a50922c768369e6b0e9cfe324d178bb81b7afb20390c54c3ef6",
-  "model_comparison_summary_sha256": "3b4b7c41c4a0b13c466542d9cef727057af897cb1a2ce0b58cec3e3e4c191b20",
-  "model_comparison_manifest_sha256": "782a33077bc9bbe3f59697156c7ae60e13980a6be5432bc0dc9fd4dc2faa3b8c",
+  "model_comparison_summary_sha256": "83bcb83e34a47e50ae41dc58137d756838c99af4c93a3d7023ac40b64105e74d",
+  "model_comparison_manifest_sha256": "8e084309df0d9cd8039bbafd199512e9e454236e7f958cdb35da6a0747fdb209",
   "model_file": "transaction_labeler.joblib",
-  "model_sha256": "6504c84115fca2f0dfa773e57858514e656761b4781ea0e8f1c85c6caf34a256",
+  "model_sha256": "8e4e2cfc550d91eeb2838aef3cb82131aaa0500341a0e6e5721abbfec7180c08",
   "training_rows": 6834,
   "target": "minor_category",
   "classes": [
@@ -59,7 +79,8 @@
       "merchant_pan_entry_method"
     ],
     "text": "title",
-    "datetime": "created_at"
+    "datetime": "created_at",
+    "text_variant": "word_char"
   },
   "major_category_mapping_policy": "learned_from_full_train_labels; refund maps to null",
   "major_category_mapping": {

@@ -19,6 +19,10 @@ from sklearn.metrics import (
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+from src.transaction_labeling.baselines import (
+    fit_title_history_rule,
+    predict_title_history_rule,
+)
 from src.transaction_labeling.targets import (
     MAJOR_TARGET,
     MINOR_TARGET,
@@ -156,23 +160,24 @@ def main():
 
     bundle = joblib.load(MODEL_FILE)
     minor_predictions = predict_minor(bundle, test_labeled)
+    baseline_rule = fit_title_history_rule(train_labeled)
+    baseline_minor_predictions = predict_title_history_rule(
+        baseline_rule, test_labeled
+    )
     major_predictions = map_minor_to_major(
         minor_predictions, bundle["major_category_mapping"]
     )
-    slice_results = evaluate_history_slices(train_labeled, test_labeled, minor_predictions)
-
-    majority_label = train_labeled[MINOR_TARGET].value_counts().idxmax()
-    majority_minor_predictions = pd.Series(majority_label, index=test_labeled.index)
-    majority_major_predictions = map_minor_to_major(
-        majority_minor_predictions, bundle["major_category_mapping"]
+    baseline_major_predictions = map_minor_to_major(
+        baseline_minor_predictions, bundle["major_category_mapping"]
     )
+    slice_results = evaluate_history_slices(train_labeled, test_labeled, minor_predictions)
 
     model_name = manifest["selected_variant"]
     rows = []
     evaluations = [
-        (MINOR_TARGET, "majority_baseline", test_labeled[MINOR_TARGET], majority_minor_predictions, minor_labels),
+        (MINOR_TARGET, "title_history_rule", test_labeled[MINOR_TARGET], baseline_minor_predictions, minor_labels),
         (MINOR_TARGET, model_name, test_labeled[MINOR_TARGET], minor_predictions, minor_labels),
-        (MAJOR_TARGET, "majority_baseline_mapped", test_major[MAJOR_TARGET], majority_major_predictions.loc[test_major.index], major_labels),
+        (MAJOR_TARGET, "title_history_rule_derived", test_major[MAJOR_TARGET], baseline_major_predictions.loc[test_major.index].fillna(NULL_MAJOR_PREDICTION), major_labels),
         (MAJOR_TARGET, f"{model_name}_derived", test_major[MAJOR_TARGET], major_predictions.loc[test_major.index].fillna(NULL_MAJOR_PREDICTION), major_labels),
     ]
     for target, name, y_true, predictions, labels in evaluations:
@@ -185,7 +190,7 @@ def main():
     lines = [
         "# Évaluation finale sur le test",
         "",
-        "Le modèle a été sélectionné par macro-F1 de `minor_category` en validation croisée temporelle sur `train`, puis réentraîné sur tout `train`. Le test a été évalué après ce choix et ne sert pas à régler le modèle.",
+        "Le modèle a été sélectionné par macro-F1 de `minor_category` en validation croisée temporelle sur `train`, puis réentraîné sur tout `train`. Le test a déjà été consulté lors d’analyses et d’essais exploratoires ; ces résultats sont donc descriptifs et ne constituent plus une estimation indépendante finale.",
         "",
         f"Période test UTC : {split_summary['splits']['test']['date_min_utc']} à {split_summary['splits']['test']['date_max_utc']} ({len(test)} lignes).",
         f"Modèle évalué : `{model_name}`. La catégorie principale est dérivée ; les remboursements sans annotation principale sont exclus de son score ({int(test[MAJOR_TARGET].isna().sum())} lignes).",

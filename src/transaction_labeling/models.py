@@ -9,11 +9,57 @@ from src.transaction_labeling.features import build_preprocessor
 
 RANDOM_STATE = 42
 
+MODEL_CANDIDATES = [
+    {
+        "name": "logistic_word_unweighted_c1",
+        "family": "logistic",
+        "text_variant": "word",
+        "weighting": "unweighted",
+        "c": 1.0,
+    },
+    {
+        "name": "logistic_word_balanced_c1",
+        "family": "logistic",
+        "text_variant": "word",
+        "weighting": "balanced",
+        "c": 1.0,
+    },
+    {
+        "name": "xgboost_word_unweighted",
+        "family": "xgboost",
+        "text_variant": "word",
+        "weighting": "unweighted",
+        "c": None,
+    },
+    {
+        "name": "xgboost_word_balanced",
+        "family": "xgboost",
+        "text_variant": "word",
+        "weighting": "balanced",
+        "c": None,
+    },
+    *[
+        {
+            "name": f"logistic_word_char_{weighting}_c{c:g}",
+            "family": "logistic",
+            "text_variant": "word_char",
+            "weighting": weighting,
+            "c": c,
+        }
+        for weighting in ["unweighted", "balanced"]
+        for c in [1.0, 4.0, 10.0]
+    ],
+]
 
-def build_logistic_classifier(class_weight=None):
+MODEL_CANDIDATES_BY_NAME = {
+    candidate["name"]: candidate for candidate in MODEL_CANDIDATES
+}
+
+
+def build_logistic_classifier(class_weight=None, c=1.0):
     return LogisticRegression(
         solver="lbfgs",
-        C=1.0,
+        C=c,
         max_iter=2_000,
         random_state=RANDOM_STATE,
         class_weight=class_weight,
@@ -36,17 +82,25 @@ def build_xgboost_classifier():
     )
 
 
-def build_model(model_family, class_weight=None):
-    if model_family == "logistic":
-        classifier = build_logistic_classifier(class_weight=class_weight)
-    elif model_family == "xgboost":
+def build_candidate_classifier(candidate):
+    if candidate["family"] == "logistic":
+        class_weight = "balanced" if candidate["weighting"] == "balanced" else None
+        return build_logistic_classifier(class_weight=class_weight, c=candidate["c"])
+    if candidate["family"] == "xgboost":
         classifier = build_xgboost_classifier()
-    else:
-        raise ValueError(f"Famille de modèle inconnue : {model_family}.")
+        return classifier
+    raise ValueError(f"Famille de modèle inconnue : {candidate['family']}.")
+
+
+def build_model(candidate_name):
+    try:
+        candidate = MODEL_CANDIDATES_BY_NAME[candidate_name]
+    except KeyError as error:
+        raise ValueError(f"Configuration inconnue : {candidate_name}.") from error
 
     return Pipeline([
-        ("features", build_preprocessor()),
-        ("classifier", classifier),
+        ("features", build_preprocessor(candidate["text_variant"])),
+        ("classifier", build_candidate_classifier(candidate)),
     ])
 
 

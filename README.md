@@ -4,28 +4,11 @@
 
 Ce projet répond au test de catégorisation PFM : à partir des informations disponibles lors de la création d’une transaction, prédire ses catégories `minor_category` et `major_category`, puis exposer le résultat dans une API locale.
 
-Le CSV fourni est synthétique. Après déduplication stricte, il contient 8 001 transactions. Le modèle retenu est une régression logistique entraînée sur `minor_category` ; `major_category` est déduite d’une correspondance apprise sur le train. Sur le test temporel final, le macro-F1 est de **0,905** pour la catégorie fine et de **0,894** pour la catégorie principale parmi les lignes annotées. Ces scores décrivent uniquement ce fichier et ne garantissent pas la performance sur des transactions réelles.
+Le CSV fourni est synthétique. Après déduplication, il contient 8 001 transactions. La validation temporelle retient une régression logistique sur TF-IDF de mots et de caractères (`C=4`), entraînée sur `minor_category` ; `major_category` est déduite d’une correspondance apprise sur le train. Son macro-F1 moyen en validation est de **0,903**. Le test avait déjà été consulté lors d’analyses exploratoires : ses résultats sont descriptifs, pas une estimation indépendante de performance.
 
 ## 1. Cibles et contrat de sortie
 
-L’API renvoie les deux catégories. Dans le CSV, chaque catégorie fine autre que `refund` correspond à une seule catégorie principale. Certaines catégories principales regroupent plusieurs catégories fines : la correspondance ne peut donc être appliquée que dans le sens `minor_category` → `major_category`.
-
-| `minor_category` | `major_category` |
-|---|---|
-| `supermarkets` | `groceries` |
-| `multimedia` | `entertainment` |
-| `restaurants` | `restaurants_bars_cafes` |
-| `betting` | `entertainment` |
-| `tolls_gas_stations` | `transportation` |
-| `atm` | `finance` |
-| `refund` | `null` dans les annotations fournies |
-| `hairdresser` | `self_care` |
-| `others_shopping` | `shopping` |
-| `pharmacies` | `self_care` |
-| `transport_means` | `transportation` |
-| `travel_means` | `travel` |
-
-J’entraîne donc un modèle sur `minor_category`, puis j’applique la correspondance apprise sur le train. Pour `refund`, `major_category` reste à `null`, comme dans les annotations. Cette règle est propre au CSV et devra être confirmée par le propriétaire de la taxonomie avant un usage métier.
+L’API renvoie les deux catégories. Dans le CSV, chaque `minor_category` hors `refund` correspond à une seule `major_category` (par exemple, `betting` et `multimedia` vers `entertainment`). Je prédis la catégorie fine, puis dérive la principale avec une correspondance apprise sur le train. Pour `refund`, `major_category` reste `null`, comme dans les annotations ; cette règle devra être confirmée par le propriétaire de la taxonomie avant un usage métier.
 
 ![Correspondance observée entre catégories fines et principales](reports/figures/03_major_minor_crosswalk.png)
 
@@ -49,26 +32,13 @@ Le CSV brut contient 8 121 lignes et 19 colonnes. J’ai examiné les cibles, le
 
 J’ai trouvé 120 paires (240 lignes) partageant le même `ref_id`. Dans chaque paire, toutes les colonnes sauf `transaction_id` sont identiques et les annotations concordent. Une ligne de chaque paire est retirée **avant le découpage**, pour éviter qu’une même transaction apparaisse dans le train et le test. Le fichier ne permet pas d’établir l’origine de ces répétitions. Le script s’arrête si un `ref_id` répété présente un contenu différent.
 
-Les classes sont déséquilibrées : `supermarkets` représente 29,3 % du jeu préparé, contre 1,5 % pour `hairdresser` — environ 20 fois moins d’exemples.
-
-| `minor_category` | Transactions | Part |
-|---|---:|---:|
-| `supermarkets` | 2 341 | 29,26 % |
-| `multimedia` | 1 538 | 19,22 % |
-| `restaurants` | 1 260 | 15,75 % |
-| `transport_means` | 847 | 10,59 % |
-| `betting` | 498 | 6,22 % |
-| `tolls_gas_stations` | 432 | 5,40 % |
-| `atm` | 351 | 4,39 % |
-| `others_shopping` | 193 | 2,41 % |
-| `travel_means` | 175 | 2,19 % |
-| `pharmacies` | 128 | 1,60 % |
-| `refund` | 120 | 1,50 % |
-| `hairdresser` | 118 | 1,47 % |
+Les classes sont déséquilibrées : `supermarkets` représente 29,3 % des lignes, contre 1,5 % pour `hairdresser`.
 
 ![Transactions par catégorie fine](reports/figures/01_minor_category_counts.png)
 
 Les valeurs manquantes concernent aussi `major_category` et `merchant_name`. Les montants sont très asymétriques ; faute de contexte métier, je n’ai supprimé ni corrigé aucune valeur extrême.
+
+Parmi les transactions hors `refund`, 273 sur 6 533 (4,2 %) ont une catégorie différente de la catégorie la plus fréquente pour leur titre, lorsque celui-ci apparaît au moins cinq fois. La pureté minimale est de 71,4 % (`AREA NFC`). Ce sont des annotations divergentes de l’historique du titre, pas des erreurs métier prouvées.
 
 ![Valeurs manquantes](reports/figures/02_missing_values.png)
 ![Valeur absolue des montants en échelle logarithmique](reports/figures/04b_absolute_amount_log_distribution.png)
@@ -90,7 +60,7 @@ Le prétraitement et le modèle final sont réunis dans un pipeline scikit-learn
 
 | Champ | Traitement |
 |---|---|
-| `title` | TF-IDF de mots, unigrammes et bigrammes ; accents normalisés, `min_df=2`, 20 000 termes maximum. |
+| `title` | TF-IDF de mots (1–2) et de caractères (`char_wb`, 2–5), ajustés dans chaque fold. Le vocabulaire est plafonné à 20 000 mots et 50 000 n-grammes de caractères. |
 | `amount_value` | `sign(x) × log(1 + abs(x))`, puis standardisation. |
 | `fees` | `log(1 + fees)`, puis standardisation ; les frais sont en centimes. |
 | `created_at` | Sinus et cosinus de l’heure et du jour de semaine en UTC ; pas de date absolue. |
@@ -98,7 +68,7 @@ Le prétraitement et le modèle final sont réunis dans un pipeline scikit-learn
 
 Le statut, les cibles, les identifiants, les champs constants et `pfm_recurring_frequency` sont exclus.
 
-J’ai comparé une régression logistique et XGBoost, chacun avec et sans pondération des classes. XGBoost utilise un réglage fixe (80 arbres, profondeur 4, taux d’apprentissage 0,05) ; il n’y a pas eu de recherche d’hyperparamètres.
+La comparaison couvre dix configurations : régression logistique avec TF-IDF mots seul ou mots+caractères, pondération équilibrée ou non et `C` égal à 1, 4 ou 10 pour les variantes texte enrichies ; XGBoost est testé avec et sans pondération, à paramètres fixes (80 arbres, profondeur 4, taux d’apprentissage 0,05).
 
 ## 4. Découpage et sélection
 
@@ -109,63 +79,41 @@ Après déduplication, le découpage se fait par date UTC :
 | `train` | 13 mars au 28 mai 2026 inclus | 6 834 | Validation temporelle et entraînement final. |
 | Test final | 29 mai au 10 juin 2026 inclus | 1 167 | Évaluation après la sélection du modèle. |
 
-La comparaison se fait uniquement sur `train`, avec sept fenêtres temporelles successives de sept jours au plus et un historique initial d’au moins 28 jours. Les mêmes fenêtres sont utilisées pour toutes les configurations ; le test final ne sert pas à choisir ni régler le modèle.
+La comparaison se fait sur `train`, avec sept fenêtres temporelles successives de sept jours au plus et un historique initial d’au moins 28 jours. Les mêmes fenêtres sont utilisées pour les dix configurations et la baseline ; les transformations sont réajustées sur l’historique de chaque fold.
 
 Le critère de sélection est le **macro-F1 de `minor_category`**, qui donne le même poids à chaque classe malgré le déséquilibre. La balanced accuracy, le F1 pondéré, l’accuracy et les résultats par classe complètent l’analyse.
 
 | Configuration | Macro-F1 moyen ± écart-type | Balanced accuracy moyenne ± écart-type |
 |---|---:|---:|
-| Régression logistique sans pondération | **0,866 ± 0,031** | 0,830 ± 0,034 |
-| Régression logistique avec poids équilibrés | 0,850 ± 0,037 | **0,867 ± 0,026** |
-| XGBoost avec poids équilibrés | 0,847 ± 0,029 | 0,851 ± 0,021 |
-| XGBoost sans pondération | 0,815 ± 0,030 | 0,770 ± 0,029 |
+| Baseline historique du titre | 0,865 ± 0,019 | 0,822 ± 0,022 |
+| Logistique, TF-IDF mots, `C=1` | 0,866 ± 0,031 | 0,830 ± 0,034 |
+| Logistique, mots+caractères, `C=1` | 0,898 ± 0,021 | 0,871 ± 0,027 |
+| Logistique, mots+caractères, `C=4` | **0,903 ± 0,023** | 0,882 ± 0,027 |
+| Logistique, mots+caractères, `C=10` | 0,900 ± 0,023 | 0,882 ± 0,025 |
+| XGBoost pondéré | 0,847 ± 0,029 | 0,851 ± 0,021 |
 
-La régression logistique sans pondération est retenue selon le macro-F1. La pondération améliore la balanced accuracy, mais réduit le critère de sélection. Les folds étant successifs et leurs historiques se recouvrant, leur écart-type décrit la variabilité observée ; ce n’est pas un intervalle de confiance.
+La configuration mots+caractères avec `C=4` est retenue par macro-F1. La pondération augmente la balanced accuracy, mais diminue le macro-F1. La baseline prédit la catégorie non-refund la plus fréquente du titre dans l’historique du fold, avec repli sur la classe majoritaire ; elle prédit `refund` par le signe du montant seulement si cette relation est parfaite dans le train du fold. Elle est évaluée comme référence, pas retenue comme pipeline ML. Les écart-types décrivent les sept fenêtres observées, pas des intervalles de confiance.
 
-La baseline est une seule règle apprise sur `train` : prédire `supermarkets` à chaque fois. Pour évaluer `major_category`, cette même prédiction devient `groceries` par la correspondance des catégories.
+## 5. Résultats sur le test déjà consulté
 
-## 5. Résultats sur le test final
+Le choix du modèle est fait sur la validation temporelle de `train`. Le test a toutefois été consulté auparavant pour analyser les erreurs et explorer de nouvelles pistes ; ces chiffres sont donc descriptifs, pas une estimation indépendante de performance.
 
-| Cible | Modèle | Lignes | Macro-F1 | Balanced accuracy | F1 pondéré | Accuracy |
+| Cible | Référence | Lignes | Macro-F1 | Balanced accuracy | F1 pondéré | Accuracy |
 |---|---|---:|---:|---:|---:|---:|
-| `minor_category` | Baseline majoritaire | 1 167 | 0,038 | 0,083 | 0,138 | 0,299 |
-| `minor_category` | Régression logistique retenue | 1 167 | **0,905** | **0,878** | **0,926** | **0,927** |
-| `major_category` | Même baseline, catégorie dérivée | 1 146 | 0,058 | 0,125 | 0,142 | 0,305 |
-| `major_category` | Catégorie dérivée du modèle | 1 146 | **0,894** | **0,867** | **0,934** | **0,935** |
+| `minor_category` | Baseline historique du titre | 1 167 | 0,897 | 0,869 | 0,922 | 0,924 |
+| `minor_category` | Logistique mots+caractères, `C=4` | 1 167 | **0,928** | **0,918** | **0,945** | **0,945** |
+| `major_category` | Baseline, catégorie dérivée | 1 146 | 0,901 | 0,871 | 0,929 | 0,929 |
+| `major_category` | Catégorie dérivée du modèle | 1 146 | **0,920** | **0,910** | **0,953** | **0,954** |
 
-Le modèle prédit `minor_category`, puis applique la correspondance apprise sur le train pour obtenir `major_category`. Les 21 remboursements du test sans catégorie principale sont exclus du score de `major_category`. Le modèle prédit correctement les 21 `refund` en catégorie fine, mais le lien parfait avec le montant positif dans ce jeu empêche d’en déduire une performance robuste sur des données réelles.
+Les 21 `refund` sans `major_category` sont exclus du score de catégorie principale. Les 21 remboursements du test sont prédits correctement en catégorie fine, mais le signe positif du montant les distingue parfaitement dans ce CSV synthétique ; ce résultat ne démontre pas une robustesse en production.
 
-Dans le test, 1 103 transactions sur 1 167 (94,5 %) ont un titre déjà vu dans le train. Les résultats par cohorte montrent l’écart entre libellés connus et inédits ; les petits groupes doivent être interprétés avec prudence.
+1 103 titres du test (94,5 %) sont connus dans le train. Le macro-F1 est de 0,933 sur ces titres et de 0,643 sur les 64 titres inédits ; ce dernier score repose sur un petit échantillon. Pour les marchands inédits, le macro-F1 atteint 0,890, mais certains partagent un titre connu, que le modèle peut exploiter.
 
-| Cohorte | Lignes | Classes présentes | Macro-F1 | Accuracy |
-|---|---:|---:|---:|---:|
-| `title` connu dans le train | 1 103 | 12 | 0,914 | 0,939 |
-| `title` inédit | 64 | 10 | 0,577 | 0,719 |
-| `merchant_id` connu dans le train | 883 | 12 | 0,928 | 0,958 |
-| `merchant_id` inédit | 284 | 12 | 0,809 | 0,831 |
+![Matrice de confusion normalisée sur le test déjà consulté](reports/figures/logistic_word_char_unweighted_c4_minor_category_confusion_matrix.png)
 
-Le sous-groupe `merchant_id` inédit peut contenir des titres déjà vus ; le modèle utilise le texte, pas cet identifiant.
+Le modèle diffère des annotations sur 64 transactions (5,5 %). Les confusions les plus fréquentes sont `restaurants` → `supermarkets` (10), `betting` → `multimedia` (7) et `transport_means` → `restaurants` (7). `others_shopping` reste la classe la moins bien reconnue (F1 0,700 sur 21 lignes).
 
-![Matrice de confusion normalisée sur le test](reports/figures/logistic_unweighted_minor_category_confusion_matrix.png)
-
-| Catégorie réelle | Support test | Précision | Rappel | F1 |
-|---|---:|---:|---:|---:|
-| `atm` | 58 | 0,891 | 0,983 | 0,934 |
-| `betting` | 67 | 0,952 | 0,896 | 0,923 |
-| `hairdresser` | 23 | 1,000 | 0,826 | 0,905 |
-| `multimedia` | 217 | 0,938 | 0,982 | 0,959 |
-| `others_shopping` | 21 | 0,867 | 0,619 | 0,722 |
-| `pharmacies` | 21 | 0,947 | 0,857 | 0,900 |
-| `refund` | 21 | 1,000 | 1,000 | 1,000 |
-| `restaurants` | 193 | 0,893 | 0,907 | 0,900 |
-| `supermarkets` | 349 | 0,926 | 0,963 | 0,944 |
-| `tolls_gas_stations` | 59 | 0,946 | 0,898 | 0,922 |
-| `transport_means` | 115 | 0,935 | 0,870 | 0,901 |
-| `travel_means` | 23 | 1,000 | 0,739 | 0,850 |
-
-Le modèle diffère des annotations du CSV sur 85 transactions (7,3 %). Les écarts les plus fréquents sont `restaurants` vers `supermarkets` (14 cas), `transport_means` vers `restaurants` (8), `betting` vers `multimedia` (6) et `supermarkets` vers `restaurants` (6).
-
-L’audit a retrouvé ces 85 écarts dans le CSV brut. Certains titres reçoivent plusieurs catégories : `APPLE.COM/BILL`, par exemple, est principalement annoté `multimedia`, mais apparaît aussi en `betting`, `others_shopping` et `refund`. Un montant de −330 978,29 € est associé à `Burger King` et annoté `supermarkets`. Sans référentiel métier, ces cas ne suffisent pas à conclure que les annotations ou montants sont erronés ; aucune correction n’a été appliquée.
+Parmi les 64 divergences, 39 portent sur un titre dont l’annotation diffère du mode historique observé dans le train, 14 sur un titre sans historique non-refund et 11 sur un titre dont l’annotation suit cet historique. Ces groupes aident à décrire les cas, mais ne prouvent ni bruit d’annotation ni cause métier. Par exemple, `APPLE.COM/BILL` apparaît sous plusieurs catégories. Le montant de −330 978,29 € associé à `Burger King` est bien présent dans le CSV brut, mais sa validité métier n’est pas vérifiable avec les informations fournies.
 
 ## 6. Reproduire l’analyse et l’entraînement
 
@@ -203,12 +151,12 @@ python -m unittest discover -s tests
 
 - `eda` décrit les données et génère les graphiques et tableaux.
 - `prepare_data` déduplique, vérifie le schéma et crée les jeux `train` et test. Les garde-fous sont calibrés sur le CSV fourni.
-- `compare_models` évalue quatre configurations sur les mêmes fenêtres temporelles.
-- `train` sélectionne celle au meilleur macro-F1 moyen et l’entraîne sur tout `train`.
+- `compare_models` évalue dix configurations et la baseline historique du titre sur les mêmes fenêtres temporelles.
+- `train` retient la configuration de modèle au meilleur macro-F1 moyen et la réentraîne sur tout `train`.
 - `evaluate` calcule les résultats sur le test ; les deux scripts suivants analysent puis vérifient les erreurs dans la source.
 - `unittest` couvre les règles de données, la sélection, le schéma et les routes de l’API.
 
-Le test final a déjà été analysé. Il ne doit pas servir à régler une nouvelle version du modèle ; une nouvelle sélection doit être confirmée sur un test indépendant.
+Le test a déjà servi à des analyses d’erreurs et à des essais exploratoires. La configuration actuelle est sélectionnée par validation temporelle sur `train`, mais une estimation indépendante exigera une nouvelle période annotée.
 
 ## 7. API locale
 
@@ -255,23 +203,12 @@ docker run --rm -p 8000:8000 lydia-transaction-labeling
 
 ## 9. Limites et prochaines étapes
 
-Les résultats restent indicatifs : le CSV est synthétique et court, 94,5 % des titres du test sont déjà vus à l’entraînement, et le signe du montant distingue parfaitement `refund` dans ce fichier. Avant un usage métier, je prioriserais :
+Le jeu est synthétique et court, et le test a déjà été exploré. Avant un usage métier, je prioriserais :
 
-1. **Construire une référence fiable.** Faire arbitrer par Produit ou Opérations un échantillon des libellés associés à plusieurs catégories et des principales confusions. Constituer ensuite un jeu de test annoté et vérifié indépendamment ; les 85 écarts actuels sont des désaccords avec le CSV, pas nécessairement 85 erreurs métier.
-2. **Mesurer la généralisation aux libellés nouveaux.** Le test ne contient que 64 titres inédits, avec un macro-F1 de 0,577, contre 0,914 pour les titres connus. Collecter plusieurs périodes futures avec assez d’exemples par classe et publier les résultats par cohorte. Sur ce jeu indépendant, comparer le TF-IDF actuel à des n-grammes de caractères, adaptés aux variantes de libellés de paiement ; garder le test actuel à l’écart du réglage.
-3. **Choisir l’objectif selon le coût métier.** Le macro-F1 donne le même poids à chaque classe ; il convient à cette comparaison, mais ne décrit pas à lui seul l’impact produit. Avec les équipes métier, quantifier les erreurs coûteuses, calibrer les probabilités sur la validation temporelle, puis mesurer le compromis entre couverture automatique et risque d’erreur avant de fixer une politique de revue.
-4. **Tester un LLM comme solution de repli ciblée.** Après calibration, router vers un LLM les libellés inédits ou les prédictions peu sûres, avec catégories autorisées, format structuré et possibilité de demander une revue humaine. Comparer classifieur seul, LLM et dispositif avec repli sur un nouveau jeu annoté. Mesurer les erreurs évitées, la couverture, la latence et le coût ; n’envoyer que les informations nécessaires, sans identifiants, avec inférence hébergée en Europe. Ne retenir cette option que si le gain mesuré justifie son coût et sa complexité.
-5. **Valider le signal de remboursement et l’exploitation.** Confirmer que le signe de `amount_value` est disponible et fiable au moment réel de la prédiction ; les 21 remboursements du test ne suffisent pas à prouver sa robustesse. Avant déploiement, exécuter le conteneur et la CI, puis suivre les erreurs d’API, les champs inconnus, la latence et les performances par classe quand les annotations arrivent.
+1. **Valider les annotations et la taxonomie.** Faire arbitrer les libellés associés à plusieurs catégories, puis constituer un jeu de test indépendant vérifié par Produit ou Opérations.
+2. **Mesurer la généralisation dans le temps.** Collecter des transactions réelles sur plusieurs périodes et suivre séparément les titres connus et nouveaux. Les 64 titres inédits actuels sont trop peu nombreux pour conclure solidement.
+3. **Définir l’automatisation sûre.** Le macro-F1 traite toutes les classes à égalité. Avec les équipes métier, quantifier le coût des erreurs, calibrer les probabilités sur des données de validation et déterminer quand demander une revue humaine. L’API ne renvoie pas encore de score de confiance.
+4. **Évaluer un LLM sur les cas difficiles.** Tester une sortie contrainte à la taxonomie comme solution de repli pour les titres nouveaux ou ambigus, sur un jeu annoté indépendant. Comparer qualité, couverture, latence et coût ; minimiser les données envoyées et utiliser une inférence hébergée en Europe.
+5. **Valider l’exploitation.** Confirmer le sens du signe de `amount_value` sur des données réelles, puis vérifier le conteneur et la CI et suivre erreurs API, latence, champs inconnus et qualité par classe lorsque les annotations arrivent.
 
-XGBoost n’a pas dépassé la régression logistique dans les configurations testées. Cette comparaison ne permet pas de conclure qu’il ne pourrait jamais faire mieux : une nouvelle recherche de paramètres demanderait davantage de données de validation et un test final indépendant.
-
-## 10. Organisation du dépôt
-
-- `data/raw/` : CSV source fourni.
-- `data/processed/` : jeux préparés et résumé du découpage.
-- `reports/figures/` : graphiques affichés dans ce README.
-- `src/transaction_labeling/` : EDA, préparation, validation, entraînement, évaluation, analyses et API.
-- `models/` : artefact entraîné et manifeste.
-- `tests/` : tests des règles de données, du modèle, du schéma et des routes HTTP.
-
-Les rapports détaillés, tableaux et documents de travail restent locaux et sont ignorés par Git. Seules les images utilisées dans ce README sont versionnées.
+Dans les configurations évaluées, la régression logistique dépasse XGBoost selon le macro-F1. Ce résultat ne vaut que pour les paramètres testés.

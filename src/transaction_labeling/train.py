@@ -13,7 +13,11 @@ from src.transaction_labeling.features import (
     NUMERIC_COLUMNS,
     TEXT_COLUMN,
 )
-from src.transaction_labeling.models import build_model
+from src.transaction_labeling.models import (
+    MODEL_CANDIDATES,
+    MODEL_CANDIDATES_BY_NAME,
+    build_model,
+)
 from src.transaction_labeling.targets import MINOR_TARGET, build_major_category_mapping
 
 
@@ -33,25 +37,20 @@ def file_sha256(path):
 
 
 def select_variant(comparison_summary):
-    if len(comparison_summary) != 4:
-        raise ValueError("Le résumé CV doit contenir les quatre configurations comparées.")
+    expected_models = set(MODEL_CANDIDATES_BY_NAME)
+    available_models = set(comparison_summary["model"])
+    if not expected_models.issubset(available_models):
+        missing = sorted(expected_models - available_models)
+        raise ValueError(f"Configurations absentes du résumé CV : {missing}.")
 
-    # Macro-F1 est le critère de sélection défini avant l'évaluation finale.
-    selection_order = {
-        "logistic_unweighted": 0,
-        "logistic_balanced": 1,
-        "xgboost_unweighted": 2,
-        "xgboost_balanced": 3,
-    }
-    comparison_summary = comparison_summary.copy()
-    comparison_summary["selection_order"] = comparison_summary["model"].map(selection_order)
-    expected_models = {
-        "logistic_unweighted", "logistic_balanced",
-        "xgboost_unweighted", "xgboost_balanced",
-    }
-    if set(comparison_summary["model"]) != expected_models:
-        raise ValueError("Le résumé CV ne contient pas les quatre configurations attendues.")
-    return comparison_summary.sort_values(
+    candidates = comparison_summary.loc[
+        comparison_summary["model"].isin(expected_models)
+    ].copy()
+    candidates["selection_order"] = candidates["model"].map({
+        candidate["name"]: index
+        for index, candidate in enumerate(MODEL_CANDIDATES)
+    })
+    return candidates.sort_values(
         ["macro_f1_mean", "selection_order"],
         ascending=[False, True],
         kind="stable",
@@ -83,11 +82,12 @@ def main():
 
     comparison_summary = pd.read_csv(COMPARISON_SUMMARY_PATH)
     selected_variant = select_variant(comparison_summary)
-    model_family, weighting = selected_variant.split("_", maxsplit=1)
-    class_weight = "balanced" if weighting == "balanced" and model_family == "logistic" else None
+    candidate = MODEL_CANDIDATES_BY_NAME[selected_variant]
+    model_family = candidate["family"]
+    weighting = candidate["weighting"]
     labeled = train.loc[train[MINOR_TARGET].notna()].copy()
     mapping = build_major_category_mapping(labeled)
-    model = build_model(model_family, class_weight=class_weight)
+    model = build_model(selected_variant)
     classes = sorted(labeled[MINOR_TARGET].unique().tolist())
     label_encoding = "identity"
 
@@ -116,14 +116,15 @@ def main():
     manifest = {
         "model_type": f"{selected_variant}_with_derived_major_category",
         "selected_variant": selected_variant,
+        "selected_candidate": candidate,
         "selection_metric": "minor_category_macro_f1_mean",
         "selection_source": "temporal_cross_validation_on_train_only",
         "classifier_parameters": ({
             "solver": "lbfgs",
-            "C": 1.0,
+            "C": candidate["c"],
             "max_iter": 2_000,
             "random_state": 42,
-            "class_weight": class_weight,
+            "class_weight": "balanced" if weighting == "balanced" else None,
         } if model_family == "logistic" else {
             "objective": "multi:softprob",
             "eval_metric": "mlogloss",
@@ -139,10 +140,20 @@ def main():
             "class_weighting": weighting,
         }),
         "text_parameters": {
-            "ngram_range": [1, 2],
-            "min_df": 2,
-            "max_features": 20_000,
-            "sublinear_tf": True,
+            "variant": candidate["text_variant"],
+            "word": {
+                "ngram_range": [1, 2],
+                "min_df": 2,
+                "max_features": 20_000,
+                "sublinear_tf": True,
+            },
+            "character": ({
+                "analyzer": "char_wb",
+                "ngram_range": [2, 5],
+                "min_df": 2,
+                "max_features": 50_000,
+                "sublinear_tf": True,
+            } if candidate["text_variant"] == "word_char" else None),
         },
         "categorical_parameters": {
             "min_frequency": 10,
@@ -165,6 +176,7 @@ def main():
             "categorical": CATEGORICAL_COLUMNS,
             "text": TEXT_COLUMN,
             "datetime": DATETIME_COLUMN,
+            "text_variant": candidate["text_variant"],
         },
         "major_category_mapping_policy": "learned_from_full_train_labels; refund maps to null",
         "major_category_mapping": mapping,

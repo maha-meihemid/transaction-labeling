@@ -37,7 +37,7 @@ def calendar_features(values):
     ])
 
 
-def build_preprocessor():
+def build_preprocessor(text_variant="word"):
     amount_pipeline = Pipeline([
         ("impute", SimpleImputer(strategy="median")),
         ("signed_log", FunctionTransformer(signed_log, validate=False)),
@@ -56,18 +56,34 @@ def build_preprocessor():
         )),
     ])
 
-    return ColumnTransformer([
+    transformers = [
         ("amount", amount_pipeline, ["amount_value"]),
         ("fees", fees_pipeline, ["fees"]),
         ("calendar", FunctionTransformer(calendar_features, validate=False), [DATETIME_COLUMN]),
         ("categorical", categorical_pipeline, CATEGORICAL_COLUMNS),
-        ("title", TfidfVectorizer(
+        ("title_word", TfidfVectorizer(
             strip_accents="unicode",
             ngram_range=(1, 2),
             min_df=2,
             max_features=20_000,
             sublinear_tf=True,
         ), TEXT_COLUMN),
-    ], remainder="drop")
+    ]
 
-\n
+    if text_variant == "word_char":
+        transformers.append((
+            "title_char",
+            TfidfVectorizer(
+                analyzer="char_wb",
+                strip_accents="unicode",
+                ngram_range=(2, 5),
+                min_df=2,
+                max_features=50_000,
+                sublinear_tf=True,
+            ),
+            TEXT_COLUMN,
+        ))
+    elif text_variant != "word":
+        raise ValueError(f"Variante de texte inconnue : {text_variant}.")
+
+    return ColumnTransformer(transformers, remainder="drop")

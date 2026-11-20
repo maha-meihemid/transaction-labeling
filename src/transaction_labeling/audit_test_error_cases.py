@@ -68,9 +68,9 @@ def main():
         "amount_value", key=lambda values: values.abs(), ascending=False
     )
     lines = [
-        "# Vérification des erreurs dans le CSV source",
+        "# Vérification des divergences dans le CSV source",
         "",
-        f"Les {len(errors)} erreurs exportées ont été retrouvées dans le CSV brut à partir de leur date, titre, montant et frais ; les deux catégories annotées ont aussi été vérifiées. Aucun identifiant de transaction n’est exporté.",
+        f"Les {len(errors)} divergences de prédiction exportées ont été retrouvées dans le CSV brut à partir de leur date, titre, montant et frais ; les deux catégories annotées ont aussi été vérifiées. Aucun identifiant de transaction n’est exporté.",
         "",
         "## Titres associés à plusieurs catégories fines",
         "",
@@ -87,7 +87,7 @@ def main():
         "",
         "Ces comptages montrent que le titre seul ne détermine pas toujours la catégorie annotée. Ils ne prouvent pas que les annotations sont fausses : le même libellé peut couvrir des achats différents, et le fichier ne fournit pas de justification métier pour chaque annotation.",
         "",
-        "## Erreurs avec des montants élevés",
+        "## Divergences avec des montants élevés",
         "",
         "| Titre | Montant | Catégorie annotée | Catégorie prédite | Présence dans le brut |",
         "|---|---:|---|---|---|",
@@ -100,7 +100,7 @@ def main():
 
     lines.extend([
         "",
-        "Les montants extrêmes sont bien présents dans la source ; il ne s’agit pas d’une altération introduite par la préparation des données. Le fichier ne permet toutefois pas de dire s’ils sont des transactions valides ou des valeurs synthétiques aberrantes. La ligne `Burger King` à -330 978,29 € est annotée `supermarkets`, alors que ce titre est très majoritairement associé à `restaurants` dans le CSV. C’est un cas à signaler comme suspect, sans le supprimer ni réécrire son label sans source métier.",
+        "Les montants extrêmes sont bien présents dans la source ; il ne s’agit pas d’une altération introduite par la préparation des données. Le fichier ne permet toutefois pas de dire s’ils sont des transactions valides ou des valeurs synthétiques aberrantes. La ligne `Burger King` à -330 978,29 € est annotée `supermarkets`, alors que ce titre est très majoritairement associé à `restaurants` dans le CSV. C’est un cas à faire vérifier, sans le supprimer ni réécrire son label sans source métier.",
         "",
         "`APPLE.COM/BILL` est également annoté dans plusieurs catégories fines, principalement `multimedia`, mais aussi `betting` et `others_shopping`. L’erreur sur ce titre peut donc refléter une ambiguïté du signal disponible et/ou une annotation incohérente ; le CSV seul ne permet pas de trancher.",
         "",
@@ -108,7 +108,7 @@ def main():
         "",
     ])
     REPORT_PATH.write_text("\n".join(lines), encoding="utf-8")
-    print(f"Erreurs vérifiées dans la source : {len(errors)}.")
+    print(f"Divergences vérifiées dans la source : {len(errors)}.")
     print(f"Titres conflictuels présents parmi les erreurs : {len(title_summary)}.")
     print(f"Rapport : {REPORT_PATH}")
 
