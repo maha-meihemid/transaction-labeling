@@ -1,141 +1,141 @@
-# Catégorisation de transactions Lydia
+# Lydia Transaction Labeling
 
-## Résumé
+## Summary
 
-Ce projet répond au test de catégorisation PFM : à partir des informations disponibles lors de la création d’une transaction, prédire ses catégories `minor_category` et `major_category`, puis exposer le résultat dans une API locale.
+This project addresses the PFM transaction-labeling test: given the information available when a transaction is created, predict its `minor_category` and `major_category`, then return both through a local API.
 
-Le CSV fourni est synthétique. Après déduplication, il contient 8 001 transactions. La validation temporelle retient une régression logistique sur TF-IDF de mots et de caractères (`C=4`), entraînée sur `minor_category` ; `major_category` est déduite d’une correspondance apprise sur le train. Son macro-F1 moyen en validation est de **0,903**. Le test avait déjà été consulté lors d’analyses exploratoires : ses résultats sont descriptifs, pas une estimation indépendante de performance.
+The supplied CSV is synthetic. After deduplication, it contains 8,001 transactions. Temporal cross-validation selected logistic regression with word and character TF-IDF features (`C=4`), trained on `minor_category`; `major_category` is derived from a mapping learned on the training data. The model's mean validation macro-F1 is **0.903**. I had already inspected the test set during exploratory analysis, so its results are descriptive rather than an independent estimate of performance.
 
-## 1. Cibles et contrat de sortie
+## 1. Targets and output contract
 
-L’API renvoie les deux catégories. Dans le CSV, chaque `minor_category` hors `refund` correspond à une seule `major_category` (par exemple, `betting` et `multimedia` vers `entertainment`). Je prédis la catégorie fine, puis dérive la principale avec une correspondance apprise sur le train. Pour `refund`, `major_category` reste `null`, comme dans les annotations ; cette règle devra être confirmée par le propriétaire de la taxonomie avant un usage métier.
+The API returns both categories. In this CSV, every `minor_category` other than `refund` maps to exactly one `major_category` (for example, `betting` and `multimedia` both map to `entertainment`). I train the model on the fine-grained category, then derive the broader category from a mapping learned on the training data. For `refund`, `major_category` remains `null`, as it does in the annotations. The taxonomy owner should confirm this rule before any business use.
 
-![Correspondance observée entre catégories fines et principales](reports/figures/03_major_minor_crosswalk.png)
+![Observed mapping between fine-grained and broad categories](reports/figures/03_major_minor_crosswalk.png)
 
-En l’absence de référentiel métier indépendant, les catégories du CSV servent de référence pour l’évaluation. L’exploration a toutefois révélé des libellés associés à plusieurs catégories ; les scores doivent être lus avec cette limite en tête.
+There is no independent business taxonomy to validate the CSV labels against, so I use the CSV annotations as the evaluation reference. The exploration did uncover titles associated with more than one category, which is an important limitation when interpreting the scores.
 
-## 2. Données et exploration
+## 2. Data and exploration
 
-Le CSV brut contient 8 121 lignes et 19 colonnes. J’ai examiné les cibles, les valeurs manquantes, les montants, les dates, les répétitions, les cardinalités et les liens entre champs avant l’entraînement.
+The raw CSV has 8,121 rows and 19 columns. Before training, I examined the targets, missing values, amounts, dates, repeated rows, cardinalities, and relationships between fields.
 
-| Constat | Résultat | Décision |
+| Finding | Result | Decision |
 |---|---:|---|
-| Transactions après déduplication | 8 001, du 13 mars au 10 juin 2026 (UTC) | Découpage temporel, décrit plus bas. |
-| Cibles | 12 catégories fines, 8 principales | L’API renvoie les deux niveaux. |
-| `major_category` manquante | 123 `refund` dans le brut, 120 après déduplication | Garder `refund` et renvoyer `null` pour la catégorie principale. |
-| `merchant_name` manquant | 110 lignes ; `title` est complet et reprend le nom quand il existe | Utiliser `title` comme texte d’entrée. |
-| `pfm_recurring_frequency` manquante | 7 781 lignes (97,25 %) ; seule valeur observée : `monthly` | Écarter ce champ : il est presque toujours vide et sa disponibilité au moment de la prédiction n’est pas établie. |
-| Montants | Médiane −10,65 ; P1 −5 872,03 ; P99 5,42 ; min. −399 180,56 ; max. 76 098,48 | Conserver les valeurs et appliquer une transformation logarithmique signée. |
-| Frais | 99e percentile à 0 ; maximum de 4 000 centimes | Garder le champ, malgré sa faible variation dans ce jeu. |
+| Transactions after deduplication | 8,001, from March 13 to June 10, 2026 (UTC) | Use a temporal split, described below. |
+| Targets | 12 fine-grained categories, 8 broad categories | Return both levels from the API. |
+| Missing `major_category` | 123 `refund` rows in the raw data; 120 after deduplication | Keep `refund` and return `null` for its broad category. |
+| Missing `merchant_name` | 110 rows; `title` is complete and contains the merchant name when available | Use `title` as the text input. |
+| Missing `pfm_recurring_frequency` | 7,781 rows (97.25%); the only observed value is `monthly` | Drop it: it is almost always missing, and its availability at prediction time is unclear. |
+| Amounts | Median −10.65; P1 −5,872.03; P99 5.42; min. −399,180.56; max. 76,098.48 | Keep the values and apply a signed logarithmic transform. |
+| Fees | 99th percentile is 0; maximum is 4,000 cents | Keep the field, despite its limited variation in this dataset. |
 
-### Répétitions et qualité des données
+### Repeated rows and data quality
 
-J’ai trouvé 120 paires (240 lignes) partageant le même `ref_id`. Dans chaque paire, toutes les colonnes sauf `transaction_id` sont identiques et les annotations concordent. Une ligne de chaque paire est retirée **avant le découpage**, pour éviter qu’une même transaction apparaisse dans le train et le test. Le fichier ne permet pas d’établir l’origine de ces répétitions. Le script s’arrête si un `ref_id` répété présente un contenu différent.
+I found 120 pairs (240 rows) with the same `ref_id`. Within each pair, every column except `transaction_id` is identical, and the labels agree. I remove one row from each pair **before splitting** so the same transaction cannot appear in both train and test. The CSV does not reveal why these rows were repeated. The script stops if a repeated `ref_id` has conflicting content.
 
-Les classes sont déséquilibrées : `supermarkets` représente 29,3 % des lignes, contre 1,5 % pour `hairdresser`.
+The classes are imbalanced: `supermarkets` accounts for 29.3% of rows, compared with 1.5% for `hairdresser`.
 
-![Transactions par catégorie fine](reports/figures/01_minor_category_counts.png)
+![Transactions by fine-grained category](reports/figures/01_minor_category_counts.png)
 
-Les valeurs manquantes concernent aussi `major_category` et `merchant_name`. Les montants sont très asymétriques ; faute de contexte métier, je n’ai supprimé ni corrigé aucune valeur extrême.
+There are also missing values in `major_category` and `merchant_name`. Amounts are highly skewed; without business context, I have not removed or changed any extreme values.
 
-Parmi les transactions hors `refund`, 273 sur 6 533 (4,2 %) ont une catégorie différente de la catégorie la plus fréquente pour leur titre, lorsque celui-ci apparaît au moins cinq fois. La pureté minimale est de 71,4 % (`AREA NFC`). Ce sont des annotations divergentes de l’historique du titre, pas des erreurs métier prouvées.
+Among non-`refund` transactions, 273 of 6,533 (4.2%) have a label that differs from the most common label for their title, considering titles that appear at least five times. The lowest such purity is 71.4% (`AREA NFC`). These are disagreements with the title's historical mode, not proven annotation errors.
 
-![Valeurs manquantes](reports/figures/02_missing_values.png)
-![Valeur absolue des montants en échelle logarithmique](reports/figures/04b_absolute_amount_log_distribution.png)
-![Montants par catégorie, valeurs extrêmes masquées pour la lisibilité](reports/figures/05_amount_by_category.png)
+![Missing values](reports/figures/02_missing_values.png)
+![Absolute amounts on a logarithmic scale](reports/figures/04b_absolute_amount_log_distribution.png)
+![Amounts by category, with extreme values hidden for readability](reports/figures/05_amount_by_category.png)
 
-`status` est exclu : dans ce fichier, `status = refunded` correspond exactement à `refund`. Le signe positif du montant distingue lui aussi parfaitement les remboursements, mais `amount_value` est conservé car il est disponible au moment de la transaction selon le sujet. Ce raccourci propre au jeu synthétique limite l’interprétation du score de `refund`.
+I exclude `status`: in this file, `status = refunded` matches `refund` exactly. Positive amounts also identify every refund in this CSV, but I keep `amount_value` because it is available when a transaction is created according to the test brief. This shortcut in the synthetic data limits what the `refund` score tells us about production performance.
 
-![Part des catégories fines selon le statut](reports/figures/08_status_target_relationship.png)
+![Share of fine-grained categories by status](reports/figures/08_status_target_relationship.png)
 
-J’ai regardé le volume par semaine pour repérer d’éventuelles ruptures ; trois mois de données synthétiques ne suffisent pas pour conclure à une saisonnalité.
+I also checked transaction volume by week for possible breaks in the data. Three months of synthetic data are not enough to draw conclusions about seasonality.
 
-![Transactions par semaine](reports/figures/06_transactions_over_time.png)
+I exclude identifiers (`transaction_id`, `ref_id`, `member_id`, `member_name`, `merchant_id`) to avoid memorization and test generalization to unseen values. `amount_currency` and `card_type` are constant. I use `title` instead of `merchant_name` because `title` is always populated.
 
-Les identifiants (`transaction_id`, `ref_id`, `member_id`, `member_name`, `merchant_id`) sont exclus pour éviter la mémorisation et évaluer la généralisation à des valeurs inédites. `amount_currency` et `card_type` sont constants. `title` remplace `merchant_name`, puisqu’il est toujours renseigné.
+## 3. Features and models
 
-## 3. Variables et modèles
+The preprocessing and final model are combined in a scikit-learn pipeline. Within each fold, transformations are fitted only on that fold's training data.
 
-Le prétraitement et le modèle final sont réunis dans un pipeline scikit-learn. À chaque fold, les transformations sont apprises uniquement sur les données d’entraînement de ce fold.
-
-| Champ | Traitement |
+| Field | Treatment |
 |---|---|
-| `title` | TF-IDF de mots (1–2) et de caractères (`char_wb`, 2–5), ajustés dans chaque fold. Le vocabulaire est plafonné à 20 000 mots et 50 000 n-grammes de caractères. |
-| `amount_value` | `sign(x) × log(1 + abs(x))`, puis standardisation. |
-| `fees` | `log(1 + fees)`, puis standardisation ; les frais sont en centimes. |
-| `created_at` | Sinus et cosinus de l’heure et du jour de semaine en UTC ; pas de date absolue. |
-| `card_name`, `digitalization_type`, `merchant_pan_entry_method` | Valeurs manquantes explicites, one-hot ; modalités vues moins de 10 fois regroupées. |
+| `title` | Word TF-IDF (1–2 grams) and character TF-IDF (`char_wb`, 2–5 grams), fitted in each fold. Vocabulary is capped at 20,000 word and 50,000 character n-grams. |
+| `amount_value` | `sign(x) × log(1 + abs(x))`, then standardized. |
+| `fees` | `log(1 + fees)`, then standardized; fees are in cents. |
+| `created_at` | Sine and cosine of the UTC hour and day of the week; no absolute date. |
+| `card_name`, `digitalization_type`, `merchant_pan_entry_method` | Explicit missing-value categories and one-hot encoding; values seen fewer than 10 times are grouped. |
 
-Le statut, les cibles, les identifiants, les champs constants et `pfm_recurring_frequency` sont exclus.
+I exclude `status`, target fields, identifiers, constant fields, and `pfm_recurring_frequency`.
 
-La comparaison couvre dix configurations : régression logistique avec TF-IDF mots seul ou mots+caractères, pondération équilibrée ou non et `C` égal à 1, 4 ou 10 pour les variantes texte enrichies ; XGBoost est testé avec et sans pondération, à paramètres fixes (80 arbres, profondeur 4, taux d’apprentissage 0,05).
+The comparison covers ten configurations: logistic regression with word-only or word-and-character TF-IDF, with or without class weighting, and `C` values of 1, 4, or 10 for the richer text variants; XGBoost is tested with and without class weighting, using fixed settings (80 trees, depth 4, learning rate 0.05).
 
-## 4. Découpage et sélection
+## 4. Temporal split and model selection
 
-Après déduplication, le découpage se fait par date UTC :
+After deduplication, I split the data by UTC date:
 
-| Jeu | Période | Lignes | Usage |
+| Set | Period | Rows | Use |
 |---|---|---:|---|
-| `train` | 13 mars au 28 mai 2026 inclus | 6 834 | Validation temporelle et entraînement final. |
-| Test final | 29 mai au 10 juin 2026 inclus | 1 167 | Évaluation après la sélection du modèle. |
+| `train` | March 13 through May 28, 2026 | 6,834 | Temporal cross-validation and final model training. |
+| Temporal test set, already inspected | May 29 through June 10, 2026 | 1,167 | Descriptive evaluation; results are not independent. |
 
-La comparaison se fait sur `train`, avec sept fenêtres temporelles successives de sept jours au plus et un historique initial d’au moins 28 jours. Les mêmes fenêtres sont utilisées pour les dix configurations et la baseline ; les transformations sont réajustées sur l’historique de chaque fold.
+Model comparison uses seven successive temporal validation windows, each up to seven days long, with at least 28 days of history to train on. All ten configurations and the baseline use the same windows; transformations are refitted on each fold's training history.
 
-Le critère de sélection est le **macro-F1 de `minor_category`**, qui donne le même poids à chaque classe malgré le déséquilibre. La balanced accuracy, le F1 pondéré, l’accuracy et les résultats par classe complètent l’analyse.
+I select models by **macro-F1 for `minor_category`**, which gives each class equal weight despite the imbalance. Balanced accuracy, weighted F1, accuracy, and per-class results provide additional context.
 
-| Configuration | Macro-F1 moyen ± écart-type | Balanced accuracy moyenne ± écart-type |
+| Selected configuration | Mean macro-F1 ± standard deviation | Mean balanced accuracy ± standard deviation |
 |---|---:|---:|
-| Baseline historique du titre | 0,865 ± 0,019 | 0,822 ± 0,022 |
-| Logistique, TF-IDF mots, `C=1` | 0,866 ± 0,031 | 0,830 ± 0,034 |
-| Logistique, mots+caractères, `C=1` | 0,898 ± 0,021 | 0,871 ± 0,027 |
-| Logistique, mots+caractères, `C=4` | **0,903 ± 0,023** | 0,882 ± 0,027 |
-| Logistique, mots+caractères, `C=10` | 0,900 ± 0,023 | 0,882 ± 0,025 |
-| XGBoost pondéré | 0,847 ± 0,029 | 0,851 ± 0,021 |
+| Title-history baseline | 0.865 ± 0.019 | 0.822 ± 0.022 |
+| Logistic regression, word TF-IDF, `C=1` | 0.866 ± 0.031 | 0.830 ± 0.034 |
+| Logistic regression, word + character TF-IDF, `C=1` | 0.898 ± 0.021 | 0.871 ± 0.027 |
+| Logistic regression, word + character TF-IDF, `C=4` | **0.903 ± 0.023** | 0.882 ± 0.027 |
+| Logistic regression, word + character TF-IDF, `C=10` | 0.900 ± 0.023 | 0.882 ± 0.025 |
+| Weighted XGBoost | 0.847 ± 0.029 | 0.851 ± 0.021 |
 
-La configuration mots+caractères avec `C=4` est retenue par macro-F1. La pondération augmente la balanced accuracy, mais diminue le macro-F1. La baseline prédit la catégorie non-refund la plus fréquente du titre dans l’historique du fold, avec repli sur la classe majoritaire ; elle prédit `refund` par le signe du montant seulement si cette relation est parfaite dans le train du fold. Elle est évaluée comme référence, pas retenue comme pipeline ML. Les écart-types décrivent les sept fenêtres observées, pas des intervalles de confiance.
+I select the word-and-character model with `C=4` by macro-F1. Class weighting improves balanced accuracy but lowers macro-F1. I did not resample the data: duplicating rare transactions would not add new examples, and removing frequent transactions would discard useful variety. The validation windows and test set retain the observed class distribution.
 
-## 5. Résultats sur le test déjà consulté
+The baseline predicts the most common non-refund category for a normalized title in the fold's history, falling back to the overall majority class. It predicts `refund` from the amount sign only when that rule is perfect in the fold's training data. I use it as a reference, not as the selected ML pipeline. Standard deviations describe the seven observed windows; they are not confidence intervals.
 
-Le choix du modèle est fait sur la validation temporelle de `train`. Le test a toutefois été consulté auparavant pour analyser les erreurs et explorer de nouvelles pistes ; ces chiffres sont donc descriptifs, pas une estimation indépendante de performance.
+## 5. Results on the test set already inspected
 
-| Cible | Référence | Lignes | Macro-F1 | Balanced accuracy | F1 pondéré | Accuracy |
+I selected the model using temporal cross-validation on `train`. However, I had previously used the test set for error analysis and exploratory experiments. These results are therefore descriptive, not an independent estimate of performance.
+
+| Target | Reference | Rows | Macro-F1 | Balanced accuracy | Weighted F1 | Accuracy |
 |---|---|---:|---:|---:|---:|---:|
-| `minor_category` | Baseline historique du titre | 1 167 | 0,897 | 0,869 | 0,922 | 0,924 |
-| `minor_category` | Logistique mots+caractères, `C=4` | 1 167 | **0,928** | **0,918** | **0,945** | **0,945** |
-| `major_category` | Baseline, catégorie dérivée | 1 146 | 0,901 | 0,871 | 0,929 | 0,929 |
-| `major_category` | Catégorie dérivée du modèle | 1 146 | **0,920** | **0,910** | **0,953** | **0,954** |
+| `minor_category` | Title-history baseline | 1,167 | 0.897 | 0.869 | 0.922 | 0.924 |
+| `minor_category` | Logistic regression, word + character TF-IDF, `C=4` | 1,167 | **0.928** | **0.918** | **0.945** | **0.945** |
+| `major_category` | Derived title-history baseline | 1,146 | 0.901 | 0.871 | 0.929 | 0.929 |
+| `major_category` | Category derived from the model | 1,146 | **0.920** | **0.910** | **0.953** | **0.954** |
 
-Les 21 `refund` sans `major_category` sont exclus du score de catégorie principale. Les 21 remboursements du test sont prédits correctement en catégorie fine, mais le signe positif du montant les distingue parfaitement dans ce CSV synthétique ; ce résultat ne démontre pas une robustesse en production.
+The 21 `refund` rows without a `major_category` are excluded from the broad-category score. The model correctly predicts `refund` for all 21 test refunds, but positive amounts identify them perfectly in this synthetic CSV; this does not demonstrate production robustness.
 
-1 103 titres du test (94,5 %) sont connus dans le train. Le macro-F1 est de 0,933 sur ces titres et de 0,643 sur les 64 titres inédits ; ce dernier score repose sur un petit échantillon. Pour les marchands inédits, le macro-F1 atteint 0,890, mais certains partagent un titre connu, que le modèle peut exploiter.
+For 1,103 test transactions (94.5%), the exact `title` value also appears in the training data. The other 64 transactions have no exact title match. These 64 rows do not necessarily represent 64 new merchants: a difference in capitalization or spacing is enough to count a title as absent under this comparison. Macro-F1 is 0.933 for transactions whose title appears in train by this exact match and 0.643 for the others; the latter score is based on a small sample. For transactions whose `merchant_id` is absent from train, macro-F1 is 0.890, although some of those transactions have a title already seen in train.
 
-![Matrice de confusion normalisée sur le test déjà consulté](reports/figures/logistic_word_char_unweighted_c4_minor_category_confusion_matrix.png)
+![Normalized confusion matrix on the test set already inspected](reports/figures/logistic_word_char_unweighted_c4_minor_category_confusion_matrix.png)
 
-Le modèle diffère des annotations sur 64 transactions (5,5 %). Les confusions les plus fréquentes sont `restaurants` → `supermarkets` (10), `betting` → `multimedia` (7) et `transport_means` → `restaurants` (7). `others_shopping` reste la classe la moins bien reconnue (F1 0,700 sur 21 lignes).
+The model disagrees with the annotations on 64 transactions (5.5%). The most frequent confusions are `restaurants` → `supermarkets` (10), `betting` → `multimedia` (7), and `transport_means` → `restaurants` (7). `others_shopping` is the least well recognized class (F1 0.700 on 21 rows).
 
-Parmi les 64 divergences, 39 portent sur un titre dont l’annotation diffère du mode historique observé dans le train, 14 sur un titre sans historique non-refund et 11 sur un titre dont l’annotation suit cet historique. Ces groupes aident à décrire les cas, mais ne prouvent ni bruit d’annotation ni cause métier. Par exemple, `APPLE.COM/BILL` apparaît sous plusieurs catégories. Le montant de −330 978,29 € associé à `Burger King` est bien présent dans le CSV brut, mais sa validité métier n’est pas vérifiable avec les informations fournies.
+Of the 64 disagreements, 39 have a label that differs from the most common label for that title in the training data, 14 have no non-refund title history, and 11 match that historical mode. These groups help describe the errors, but do not prove annotation noise or explain the business cause. For example, `APPLE.COM/BILL` appears under several categories. The −330,978.29 € amount associated with `Burger King` is in the raw CSV, but I cannot verify whether it is valid from the available information.
 
-## 6. Reproduire l’analyse et l’entraînement
+## 6. Reproducing the analysis and training
 
-Depuis la racine du dépôt, avec Python 3.13 :
+From the repository root, using Python 3.13:
 
 ```bash
 python -m venv .venv
 ```
 
-Sous Windows PowerShell :
+On Windows PowerShell:
 
 ```powershell
 .venv\Scripts\Activate.ps1
 ```
 
-Sous macOS ou Linux :
+On macOS or Linux:
 
 ```bash
 source .venv/bin/activate
 ```
 
-Puis installer les dépendances et lancer les étapes dans l’ordre :
+Then install dependencies and run the steps in order:
 
 ```bash
 pip install -r requirements.txt
@@ -149,39 +149,39 @@ python -m src.transaction_labeling.audit_test_error_cases
 python -m unittest discover -s tests
 ```
 
-- `eda` décrit les données et génère les graphiques et tableaux.
-- `prepare_data` déduplique, vérifie le schéma et crée les jeux `train` et test. Les garde-fous sont calibrés sur le CSV fourni.
-- `compare_models` évalue dix configurations et la baseline historique du titre sur les mêmes fenêtres temporelles.
-- `train` retient la configuration de modèle au meilleur macro-F1 moyen et la réentraîne sur tout `train`.
-- `evaluate` calcule les résultats sur le test ; les deux scripts suivants analysent puis vérifient les erreurs dans la source.
-- `unittest` couvre les règles de données, la sélection, le schéma et les routes de l’API.
+- `eda` summarizes the data and generates charts and tables.
+- `prepare_data` deduplicates the data, checks the schema, and creates the `train` and test sets. Its guardrails are calibrated to the supplied CSV.
+- `compare_models` evaluates ten configurations and the title-history baseline on the same temporal windows.
+- `train` selects the configuration with the best mean macro-F1 and refits it on all of `train`.
+- `evaluate` scores the model on the test set; the next two scripts analyze and verify errors against the source data.
+- `unittest` covers data rules, model selection, the API schema, and API routes.
 
-Le test a déjà servi à des analyses d’erreurs et à des essais exploratoires. La configuration actuelle est sélectionnée par validation temporelle sur `train`, mais une estimation indépendante exigera une nouvelle période annotée.
+The test set has already been used for error analysis and exploratory experiments. The current model is selected by temporal cross-validation on `train`, but an independent estimate will require a newly labeled period.
 
-## 7. API locale
+## 7. Local API
 
-Après l’entraînement, démarrer l’API depuis la racine du dépôt :
+After training, start the API from the repository root:
 
 ```bash
 uvicorn src.transaction_labeling.api:app --host 127.0.0.1 --port 8000
 ```
 
-- `GET /health` confirme que l’API répond et indique le modèle chargé.
-- `POST /predict` reçoit une transaction et renvoie `minor_category` et `major_category`.
-- `title`, `amount_value` et `created_at` sont requis. La date doit être ISO 8601 avec fuseau horaire ; UTC est recommandé.
-- `fees` est facultatif (0 par défaut, en centimes). Les champs `card_name`, `digitalization_type` et `merchant_pan_entry_method` sont facultatifs et acceptent `null`.
-- Les champs inconnus sont refusés. Une entrée invalide renvoie HTTP 422 ; une erreur interne d’inférence renvoie HTTP 500.
-- Pour `refund`, `major_category` vaut `null`.
+- `GET /health` confirms that the API is responding and reports the loaded model.
+- `POST /predict` accepts one transaction and returns `minor_category` and `major_category`.
+- `title`, `amount_value`, and `created_at` are required. The date must be ISO 8601 with a time zone; UTC is recommended.
+- `fees` is optional (defaults to 0, in cents). `card_name`, `digitalization_type`, and `merchant_pan_entry_method` are optional and may be `null`.
+- Unknown fields are rejected. Invalid input returns HTTP 422; an internal inference error returns HTTP 500.
+- For `refund`, `major_category` is `null`.
 
-Exemple :
+Example:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/predict \
   -H "Content-Type: application/json" \
-  -d '{"title":"CARREFOUR MARKET","amount_value":-24.5,"created_at":"2026-06-11T12:30:00Z","fees":0,"card_name":"Carte Lydia bleue","digitalization_type":"apple_pay","merchant_pan_entry_method":"CHIP_CONTACTLESS"}'
+  -d '{"title":"CARREFOUR MARKET","amount_value":-24.5,"created_at":"2026-06-11T12:30:00Z","fees":0,"card_name":"Lydia Blue Card","digitalization_type":"apple_pay","merchant_pan_entry_method":"CHIP_CONTACTLESS"}'
 ```
 
-Réponse :
+Response:
 
 ```json
 {
@@ -190,25 +190,25 @@ Réponse :
 }
 ```
 
-Les catégories illustrent le format de réponse ; elles ne sont pas garanties pour cet exemple. La documentation interactive est disponible sur `http://127.0.0.1:8000/docs`.
+The categories illustrate the response format; they are not guaranteed for this example. Interactive API docs are available at `http://127.0.0.1:8000/docs`.
 
 ## 8. Docker
 
-Le [Dockerfile](Dockerfile) installe les dépendances, copie le code et le modèle, puis lance Uvicorn sur le port 8000. L’entraînement doit avoir été exécuté avant la construction de l’image.
+The [Dockerfile](Dockerfile) installs dependencies, copies the code and model, and starts Uvicorn on port 8000. Training must be complete before building the image.
 
 ```bash
 docker build -t lydia-transaction-labeling .
 docker run --rm -p 8000:8000 lydia-transaction-labeling
 ```
 
-## 9. Limites et prochaines étapes
+## 9. Limitations and next steps
 
-Le jeu est synthétique et court, et le test a déjà été exploré. Avant un usage métier, je prioriserais :
+The dataset is synthetic and short, and I have already inspected the test set. Before using this for business decisions, I would prioritize:
 
-1. **Valider les annotations et la taxonomie.** Faire arbitrer les libellés associés à plusieurs catégories, puis constituer un jeu de test indépendant vérifié par Produit ou Opérations.
-2. **Mesurer la généralisation dans le temps.** Collecter des transactions réelles sur plusieurs périodes et suivre séparément les titres connus et nouveaux. Les 64 titres inédits actuels sont trop peu nombreux pour conclure solidement.
-3. **Définir l’automatisation sûre.** Le macro-F1 traite toutes les classes à égalité. Avec les équipes métier, quantifier le coût des erreurs, calibrer les probabilités sur des données de validation et déterminer quand demander une revue humaine. L’API ne renvoie pas encore de score de confiance.
-4. **Évaluer un LLM sur les cas difficiles.** Tester une sortie contrainte à la taxonomie comme solution de repli pour les titres nouveaux ou ambigus, sur un jeu annoté indépendant. Comparer qualité, couverture, latence et coût ; minimiser les données envoyées et utiliser une inférence hébergée en Europe.
-5. **Valider l’exploitation.** Confirmer le sens du signe de `amount_value` sur des données réelles, puis vérifier le conteneur et la CI et suivre erreurs API, latence, champs inconnus et qualité par classe lorsque les annotations arrivent.
+1. **Validate the labels and taxonomy.** Resolve cases where a title has multiple labels, then create an independent test set reviewed by Product or Operations.
+2. **Measure how well the model generalizes over time.** Collect real transactions across several periods and track titles and `merchant_id` values that are present or absent from the training history. For titles, define a normalization rule (capitalization and spacing) and use it consistently across periods. The 64 transactions in the current cohort are based on exact `title` matching; they are not enough to draw firm conclusions about generalization to new titles.
+3. **Decide when to automate.** Macro-F1 gives every class equal weight, but it does not tell us whether a prediction is reliable enough to automate. Before exposing probabilities, I would evaluate and, if needed, calibrate them on a newly labeled period after the training data, using calibration plots, the Brier score, and log loss. The test set already inspected must not be reused for this step. If the teams need them, the API could then return the three most likely `minor_category` values with calibrated probabilities. The backend could send transactions for manual review when the top-ranked category's probability falls below a threshold set with the business teams, based on the cost of errors and their review capacity. In production, I would deploy the evaluated model and calibrator together; the API does not return probabilities today.
+4. **Evaluate an LLM as a fallback.** On an independently labeled dataset, compare the main model with an LLM whose output is restricted to the allowed categories, for transactions below the confidence threshold in the previous step. If the quality justifies the cost and latency, the backend could call the LLM for those cases before any manual review. Limit the data sent and use inference hosted in Europe.
+5. **Validate production operations.** Confirm the meaning of the `amount_value` sign on real data, then verify the container and CI, and monitor API errors, latency, unknown fields, and per-class quality as new labels become available.
 
-Dans les configurations évaluées, la régression logistique dépasse XGBoost selon le macro-F1. Ce résultat ne vaut que pour les paramètres testés.
+Across the configurations I tested, logistic regression outperformed XGBoost on macro-F1. That result applies only to the configurations evaluated.
