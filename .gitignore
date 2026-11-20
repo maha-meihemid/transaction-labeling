@@ -221,3 +221,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.mplconfig/
+
+# Keep only the figures embedded in the README.
+reports/*
+!reports/figures/
+reports/figures/*
+!reports/figures/01_minor_category_counts.png
+!reports/figures/02_missing_values.png
+!reports/figures/03_major_minor_crosswalk.png
+!reports/figures/04b_absolute_amount_log_distribution.png
+!reports/figures/05_amount_by_category.png
+!reports/figures/06_transactions_over_time.png
+!reports/figures/08_status_target_relationship.png
+!reports/figures/logistic_unweighted_minor_category_confusion_matrix.png
+docs/

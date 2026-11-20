@@ -1,0 +1,94 @@
+{
+  "source_file": "data\\raw\\transaction-dataset.csv",
+  "source_sha256": "e00c3d249503c97dc64e5b014f6871e6a3114019795f0c2a7276e3cf4d5a1860",
+  "split_method": "chronological_by_created_at_utc_day",
+  "group_column": "ref_id",
+  "train_end_inclusive_utc": "2026-05-28",
+  "targets": [
+    "major_category",
+    "minor_category"
+  ],
+  "deduplication": {
+    "method": "drop repeated ref_id rows only when every column except transaction_id is identical",
+    "rows_before_cleaning": 8121,
+    "duplicate_pairs_removed": 120,
+    "rows_after_cleaning": 8001,
+    "label_conflicts": 0,
+    "applied_before_split": true
+  },
+  "major_category_missing_policy": "preserve missing labels; they occur exactly for minor_category=refund in this CSV",
+  "rows": 8001,
+  "ref_id_groups": 8001,
+  "splits": {
+    "train": {
+      "file": "train.csv",
+      "rows": 6834,
+      "row_share": 0.854143,
+      "ref_id_groups": 6834,
+      "group_share": 0.854143,
+      "date_min_utc": "2026-03-13T00:03:44+00:00",
+      "date_max_utc": "2026-05-28T23:47:44+00:00",
+      "minor_category_counts": {
+        "atm": 293,
+        "betting": 431,
+        "hairdresser": 95,
+        "multimedia": 1321,
+        "others_shopping": 172,
+        "pharmacies": 107,
+        "refund": 99,
+        "restaurants": 1067,
+        "supermarkets": 1992,
+        "tolls_gas_stations": 373,
+        "transport_means": 732,
+        "travel_means": 152
+      },
+      "major_category_counts": {
+        "entertainment": 1752,
+        "finance": 293,
+        "groceries": 1992,
+        "restaurants_bars_cafes": 1067,
+        "self_care": 202,
+        "shopping": 172,
+        "transportation": 1105,
+        "travel": 152
+      },
+      "major_category_missing": 99,
+      "sha256": "a49c54f29c6d8a50922c768369e6b0e9cfe324d178bb81b7afb20390c54c3ef6"
+    },
+    "test": {
+      "file": "test.csv",
+      "rows": 1167,
+      "row_share": 0.145857,
+      "ref_id_groups": 1167,
+      "group_share": 0.145857,
+      "date_min_utc": "2026-05-29T00:52:12+00:00",
+      "date_max_utc": "2026-06-10T23:59:49+00:00",
+      "minor_category_counts": {
+        "atm": 58,
+        "betting": 67,
+        "hairdresser": 23,
+        "multimedia": 217,
+        "others_shopping": 21,
+        "pharmacies": 21,
+        "refund": 21,
+        "restaurants": 193,
+        "supermarkets": 349,
+        "tolls_gas_stations": 59,
+        "transport_means": 115,
+        "travel_means": 23
+      },
+      "major_category_counts": {
+        "entertainment": 284,
+        "finance": 58,
+        "groceries": 349,
+        "restaurants_bars_cafes": 193,
+        "self_care": 44,
+        "shopping": 21,
+        "transportation": 174,
+        "travel": 23
+      },
+      "major_category_missing": 21,
+      "sha256": "b91fbf89af680ce85123980951a8136e00c26e9d9c63f65975e5eca5c18c1f04"
+    }
+  }
+}
